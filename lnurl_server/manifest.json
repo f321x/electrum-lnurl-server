@@ -1,6 +1,6 @@
 {
   "name": "lnurl_server",
   "fullname": "LNURL server",
-  "description": "LNURL server for lnurl withdraw",
+  "description": "LNURL server for lnurl pay",
   "available_for": ["cmdline"]
 }
