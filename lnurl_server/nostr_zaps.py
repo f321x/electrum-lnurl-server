@@ -86,7 +86,8 @@ class NostrZapExtension(Logger):
             )
             self.logger.debug(f'Published zap receipt: {eid}')
 
-    def validate_zap_request(self, zap_request_json: str, amount_query: int):
+    @staticmethod
+    def validate_zap_request(zap_request_json: str, amount_query: int):
         event_dict = json.loads(zap_request_json)
         event = Event(**event_dict)
         assert event.verify(), "It MUST have a valid nostr signature"
