@@ -1,0 +1,151 @@
+import asyncio
+import json
+from typing import Optional
+from typing import TYPE_CHECKING
+from secrets import token_hex
+
+from . import util
+from .nostr_zaps import NostrZapExtension
+
+from electrum.lrucache import LRUCache
+from electrum.util import log_exceptions, ignore_exceptions, EventListener, event_listener
+from electrum.logging import Logger
+from electrum.lnaddr import lnencode
+from electrum.invoices import PR_PAID
+
+from aiohttp import web
+
+if TYPE_CHECKING:
+    from electrum.simple_config import SimpleConfig
+    from electrum.wallet import Abstract_Wallet
+    from electrum.invoices import Request
+
+
+class LNURLServer(Logger, EventListener):
+    """
+    public API:
+    - /.well-known/lnurlp/{any_username}
+    - /lnurlp/callback/{token}
+    """
+
+    def __init__(self, config: 'SimpleConfig', wallet: 'Abstract_Wallet'):
+        Logger.__init__(self)
+        self.config = config
+        self.wallet = wallet
+        self.server = None  # type: Optional[web.TCPSite]
+        self.domain: str = util.normalize_url(self.config.LNURL_SERVER_DOMAIN)
+        self.listen_host: str = self.config.LNURL_SERVER_HOST
+        self.port: int = self.config.LNURL_SERVER_PORT
+        self.callbacks = LRUCache(maxsize=100)
+        self.zap_manager = NostrZapExtension(self.wallet)
+        self.register_callbacks()
+
+    @ignore_exceptions
+    @log_exceptions
+    async def run(self):
+
+        while self.wallet.has_password() and self.wallet.get_unlocked_password() is None:
+            self.logger.warning("This wallet is password-protected. Please unlock it to start the lnurl server plugin")
+            await asyncio.sleep(10)
+
+        while not self.wallet.has_lightning():
+            self.logger.warning("LNURL server needs a wallet with lightning")
+            await asyncio.sleep(10)
+
+        app = web.Application()
+        app.add_routes([web.get('/.well-known/lnurlp/{username}', self.lnurl_pay)])
+        app.add_routes([web.get('/lnurlp/callback/{token}', self.lnurlp_callback)])
+
+        runner = web.AppRunner(app)
+        await runner.setup()
+        self.server = web.TCPSite(runner, host=self.listen_host, port=self.port)
+        await self.server.start()
+        self.logger.info(f"running and listening on port {self.port}")
+
+    async def stop(self):
+        if self.server is not None:
+            await self.server.stop()
+        self.server = None
+        self.unregister_callbacks()
+
+    async def lnurl_pay(self, r):
+        username = r.match_info['username']
+        # handle requests for all usernames, would there be a point in rejecting non-registered usernames?
+        self.logger.info(f"lnurlp request for {username=}")
+        max_sendable = int(self.wallet.lnworker.num_sats_can_receive()) * 1000
+        if max_sendable < 1:
+            error = {"status": "ERROR", "reason": "cannot receive anything, no liquidity."}
+            return web.json_response(error)
+        callback_token = token_hex(32)
+        metadata = json.dumps([['text/plain', f'Payment to {username}']])
+        self.callbacks[callback_token] = metadata
+        response = {
+            'callback': f"https://{self.domain}/lnurlp/callback/{callback_token}",
+            'maxSendable': max_sendable,
+            'minSendable': min(max_sendable, 1),
+            'metadata': metadata,
+            'commentAllowed': 50,
+            'tag': 'payRequest',
+            'allowsNostr': True,
+            'nostrPubkey': self.zap_manager.nostr_keypair.pubkey.hex(),
+        }
+        return web.json_response(response)
+
+    async def lnurlp_callback(self, r):
+        token = r.match_info['token']
+        if not token in self.callbacks:
+            error = {"status":"ERROR", "reason":"request not found, maybe expired, try again."}
+            return web.json_response(error)
+        metadata = self.callbacks.pop(token)
+        amount_msats = int(r.query['amount'])
+        if amount_msats // 1000 > int(self.wallet.lnworker.num_sats_can_receive()):
+            error = {"status": "ERROR", "reason": "cannot receive this amount, try smaller payment."}
+            return web.json_response(error)
+
+        if (zap_request := r.query.get('nostr')) is not None:
+            try:
+                self.zap_manager.validate_zap_request(zap_request, amount_msats)
+            except Exception as e:
+                error = {"status": "ERROR", "reason": f"Invalid zap request: {str(e)}."}
+                return web.json_response(error)
+
+        comment = r.query.get('comment', 'lnurlp request')[:50]
+        pay_req_key = self.wallet.create_request(
+            amount_sat=amount_msats // 1000,
+            message=comment,
+            exp_delay=120,
+            address=None,
+        )
+        pay_req = self.wallet.get_request(pay_req_key)
+        lnaddr, _invoice = self.wallet.lnworker.get_bolt11_invoice(
+            payment_hash=pay_req.payment_hash,
+            amount_msat=pay_req.amount_msat,
+            message='',  # will get replaced below with hash
+            expiry=pay_req.exp,
+            fallback_address=None,
+        )
+        lnaddr.tags = [tag for tag in lnaddr.tags if tag[0] != 'd']
+        lnaddr.tags.append(['h', zap_request or metadata])  # prioritize zap_request over metadata
+        b11 = lnencode(lnaddr, self.wallet.lnworker.node_keypair.privkey)
+        if zap_request:
+            self.zap_manager.store_zap_request(pay_req.payment_hash, zap_request, b11)
+        response = {
+            'pr': b11,
+            'routes': [],
+        }
+        return web.json_response(response)
+
+    @event_listener
+    async def on_event_request_status(self, wallet: 'Abstract_Wallet', key: str, status):
+        if wallet != self.wallet:
+            return
+        request: Optional['Request'] = self.wallet.get_request(key)
+        preimage = self.wallet.lnworker.get_preimage(request.payment_hash)
+        if not request or not request.is_lightning():
+            return
+        if status != PR_PAID or not preimage:
+            return
+        try:
+            await self.zap_manager.maybe_publish_zap_receipt(request.payment_hash, preimage)
+        except Exception:
+            self.logger.exception(f'failed to broadcast zap confirmation event')

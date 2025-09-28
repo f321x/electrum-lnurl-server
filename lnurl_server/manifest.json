@@ -1,0 +1,6 @@
+{
+  "name": "lnurl_server",
+  "fullname": "LNURL server",
+  "description": "LNURL server for lnurl withdraw",
+  "available_for": ["cmdline"]
+}
