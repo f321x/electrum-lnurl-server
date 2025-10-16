@@ -72,8 +72,8 @@ class LNURLServer(Logger, EventListener):
         username = r.match_info['username']
         # handle requests for all usernames, would there be a point in rejecting non-registered usernames?
         self.logger.info(f"lnurlp request for {username=}")
-        max_sendable = int(self.wallet.lnworker.num_sats_can_receive()) * 1000
-        if max_sendable < 1:
+        max_sendable_msat = int(self.wallet.lnworker.num_sats_can_receive()) * 1000
+        if max_sendable_msat < 1000:
             error = {"status": "ERROR", "reason": "cannot receive anything, no liquidity."}
             return web.json_response(error)
         callback_token = token_hex(32)
@@ -81,8 +81,8 @@ class LNURLServer(Logger, EventListener):
         self.callbacks[callback_token] = metadata
         response = {
             'callback': f"https://{self.domain}/lnurlp/callback/{callback_token}",
-            'maxSendable': max_sendable,
-            'minSendable': min(max_sendable, 1),
+            'maxSendable': max_sendable_msat,
+            'minSendable': min(max_sendable_msat, 1000),
             'metadata': metadata,
             'commentAllowed': 50,
             'tag': 'payRequest',
@@ -117,11 +117,11 @@ class LNURLServer(Logger, EventListener):
             address=None,
         )
         pay_req = self.wallet.get_request(pay_req_key)
+        payment_info = self.wallet.lnworker.get_payment_info(pay_req.payment_hash)
+        assert payment_info
         lnaddr, _invoice = self.wallet.lnworker.get_bolt11_invoice(
-            payment_hash=pay_req.payment_hash,
-            amount_msat=pay_req.amount_msat,
+            payment_info=payment_info,
             message='',  # will get replaced below with hash
-            expiry=pay_req.exp,
             fallback_address=None,
         )
         lnaddr.tags = [tag for tag in lnaddr.tags if tag[0] != 'd']
