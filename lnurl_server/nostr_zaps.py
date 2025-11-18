@@ -87,7 +87,7 @@ class NostrZapExtension(Logger):
             self.logger.debug(f'Published zap receipt: {eid}')
 
     @staticmethod
-    def validate_zap_request(zap_request_json: str, amount_query: int):
+    def validate_zap_request(zap_request_json: str, amount_query: int) -> str:
         event_dict = json.loads(zap_request_json)
         event = Event(**event_dict)
         assert event.verify(), "It MUST have a valid nostr signature"
@@ -108,6 +108,7 @@ class NostrZapExtension(Logger):
             it MUST be equal to the amount query parameter: {amount_query=} != {amount_tags=}"
         # todo: how to validate this 'coordinate' properly?
         # If there is an a tag, it MUST be a valid NIP-33 event coordinate
+        return event.id
 
     def store_zap_request(self, payment_hash: bytes, zap_request_json: str, b11_invoice: str):
         self.zap_requests[payment_hash] = (zap_request_json, b11_invoice)
