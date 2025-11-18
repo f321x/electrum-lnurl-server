@@ -36,7 +36,7 @@ class LNURLServer(Logger, EventListener):
         self.domain: str = util.normalize_url(self.config.LNURL_SERVER_DOMAIN)
         self.listen_host: str = self.config.LNURL_SERVER_HOST
         self.port: int = self.config.LNURL_SERVER_PORT
-        self.callbacks = LRUCache(maxsize=100)
+        self.callbacks = LRUCache(maxsize=10_000)
         self.zap_manager = NostrZapExtension(self.wallet)
         self.register_callbacks()
 
@@ -70,13 +70,15 @@ class LNURLServer(Logger, EventListener):
 
     async def lnurl_pay(self, r):
         username = r.match_info['username']
+        if not isinstance(username, str) or len(username) > 100:
+            raise web.HTTPBadRequest(reason='Invalid username')
         # handle requests for all usernames, would there be a point in rejecting non-registered usernames?
         self.logger.info(f"lnurlp request for {username=}")
         max_sendable_msat = int(self.wallet.lnworker.num_sats_can_receive()) * 1000
         if max_sendable_msat < 1000:
             error = {"status": "ERROR", "reason": "cannot receive anything, no liquidity."}
             return web.json_response(error)
-        callback_token = token_hex(32)
+        callback_token = token_hex(16)
         metadata = json.dumps([['text/plain', f'Payment to {username}']])
         self.callbacks[callback_token] = metadata
         response = {
@@ -96,7 +98,7 @@ class LNURLServer(Logger, EventListener):
         if not token in self.callbacks:
             error = {"status":"ERROR", "reason":"request not found, maybe expired, try again."}
             return web.json_response(error)
-        metadata = self.callbacks.pop(token)
+        metadata = self.callbacks.get(token)
         amount_msats = int(r.query['amount'])
         if amount_msats // 1000 > int(self.wallet.lnworker.num_sats_can_receive()):
             error = {"status": "ERROR", "reason": "cannot receive this amount, try smaller payment."}
