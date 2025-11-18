@@ -97,15 +97,15 @@ class NostrZapExtension(Logger):
         assert len(p_tags) == 1, f"It MUST have only one p tag: {p_tags}"
         e_tags = [tag for tag in event.tags if len(tag) > 0 and tag[0] == 'e']
         assert 0 <= len(e_tags) <= 1, f"It MUST have 0 or 1 e tags: {e_tags}"
-        amount_tag = [tag for tag in event.tags if len(tag) > 1 and tag[0] == 'amount']
+        amount_tags = [tag for tag in event.tags if len(tag) > 1 and tag[0] == 'amount']
         P_tags = [tag for tag in event.tags if len(tag) > 1 and tag[0] == 'P']
         if P_tags:
             assert len(P_tags) == 1, "There MUST be 0 or 1 P tags"
             assert P_tags[0][1] == event.pubkey, f"{p_tags=}: MUST be equal to the zap sender's pubkey"
-        if amount_tag:
-            assert len(amount_tag) == 1, f"multiple amount tags: {amount_tag}"
-            assert int(amount_tag[1]) == amount_query, f"If there is an amount tag, \
-            it MUST be equal to the amount query parameter: {amount_query=} != {amount_tag=}"
+        if amount_tags:
+            assert len(amount_tags) == 1, f"multiple amount tags: {amount_tags}"
+            assert int(amount_tags[0][1]) == amount_query, f"If there is an amount tag, \
+            it MUST be equal to the amount query parameter: {amount_query=} != {amount_tags=}"
         # todo: how to validate this 'coordinate' properly?
         # If there is an a tag, it MUST be a valid NIP-33 event coordinate
 
