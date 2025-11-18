@@ -108,6 +108,7 @@ class LNURLServer(Logger, EventListener):
             try:
                 self.zap_manager.validate_zap_request(zap_request, amount_msats)
             except Exception as e:
+                self.logger.debug(f"invalid {zap_request=}: ", exc_info=True)
                 error = {"status": "ERROR", "reason": f"Invalid zap request: {str(e)}."}
                 return web.json_response(error)
 
