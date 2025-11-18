@@ -14,6 +14,7 @@ from electrum.lnaddr import lnencode
 from electrum.invoices import PR_PAID
 
 from aiohttp import web
+import aiohttp
 
 if TYPE_CHECKING:
     from electrum.simple_config import SimpleConfig
@@ -39,6 +40,14 @@ class LNURLServer(Logger, EventListener):
         self.callbacks = LRUCache(maxsize=10_000)
         self.zap_manager = NostrZapExtension(self.wallet)
         self.register_callbacks()
+        self.addrequest_url = self.get_addrequest_endpoint()
+        self.logger.info(f'addrequest url {self.addrequest_url}')
+
+    def get_addrequest_endpoint(self):
+        url = self.config.LNURL_SERVER_ADDREQUEST_ENDPOINT
+        if url is None:
+            url = 'http://localhost:%d/api/add_request' % self.config.LNURL_SERVER_PORT
+        return url
 
     @ignore_exceptions
     @log_exceptions
@@ -55,6 +64,7 @@ class LNURLServer(Logger, EventListener):
         app = web.Application()
         app.add_routes([web.get('/.well-known/lnurlp/{username}', self.lnurl_pay)])
         app.add_routes([web.get('/lnurlp/callback/{token}', self.lnurlp_callback)])
+        app.add_routes([web.post('/api/add_request', self.add_request)])
 
         runner = web.AppRunner(app)
         await runner.setup()
@@ -106,13 +116,46 @@ class LNURLServer(Logger, EventListener):
 
         if (zap_request := r.query.get('nostr')) is not None:
             try:
-                self.zap_manager.validate_zap_request(zap_request, amount_msats)
+                event_id = self.zap_manager.validate_zap_request(zap_request, amount_msats)
             except Exception as e:
                 self.logger.debug(f"invalid {zap_request=}: ", exc_info=True)
                 error = {"status": "ERROR", "reason": f"Invalid zap request: {str(e)}."}
                 return web.json_response(error)
+        else:
+            event_id = None
 
-        comment = r.query.get('comment', 'lnurlp request')[:50]
+        async with aiohttp.ClientSession() as session:
+            metadata = zap_request or metadata  # prioritize zap_request over metadata
+            comment = r.query.get('comment', 'lnurlp request')[:50]
+            req = {
+                'amount_msats': amount_msats,
+                'comment': comment,
+                'metadata': metadata,
+                'event_id': event_id,
+            }
+            async with session.post(self.addrequest_url, json=req) as response:
+                r = await response.json()
+
+        b11 = r['invoice']
+        payment_hash = bytes.fromhex(r['rhash'])
+
+        if zap_request:
+            self.zap_manager.store_zap_request(payment_hash, zap_request, b11)
+        response = {
+            'pr': b11,
+            'routes': [],
+        }
+        return web.json_response(response)
+
+    async def add_request(self, r):
+        params = await r.json()
+        try:
+            amount_msats = int(params['amount_msats'])
+            comment = params['comment']
+            metadata = params['metadata']
+        except Exception as e:
+            self.logger.info(f"{r}, {params}, {e}")
+            raise web.HTTPUnsupportedMediaType()
         pay_req_key = self.wallet.create_request(
             amount_sat=amount_msats // 1000,
             message=comment,
@@ -128,13 +171,11 @@ class LNURLServer(Logger, EventListener):
             fallback_address=None,
         )
         lnaddr.tags = [tag for tag in lnaddr.tags if tag[0] != 'd']
-        lnaddr.tags.append(['h', zap_request or metadata])  # prioritize zap_request over metadata
+        lnaddr.tags.append(['h', metadata])
         b11 = lnencode(lnaddr, self.wallet.lnworker.node_keypair.privkey)
-        if zap_request:
-            self.zap_manager.store_zap_request(pay_req.payment_hash, zap_request, b11)
         response = {
-            'pr': b11,
-            'routes': [],
+            'invoice': b11,
+            'rhash': pay_req.payment_hash.hex()
         }
         return web.json_response(response)
 
