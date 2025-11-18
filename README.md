@@ -40,16 +40,14 @@ For an easier initial setup procedure you can also initialize the wallet in GUI 
 $ git clone https://github.com/f321x/electrum-lnurl-server
 ```
 
-2. Copy the `lnurl_server` directory into the `electrum/electrum/plugins/.` directory
+2. Symlink the `lnurl_server` directory into the `electrum/electrum/plugins/.` directory
 ```bash
-$ ls 
-lnurl_server  README.md
-$ cp -r lnurl_server ../electrum/electrum/plugins
+$ ln -s /absolute/path/to/electrum-lnurl-server/lnurl_server /absolute/path/to/electrum/electrum/plugins/lnurl_server
 ```
 
 3. Enable the Plugin in Electrum
 ```bash
-$ ./run_electrum setconfig -o plugins.lnurl_server.enabled True
+$ ./run_electrum setconfig -o plugins.lnurl_server.enabled true
 ```
 
 4. Configure the domain on which your server will receive requests
