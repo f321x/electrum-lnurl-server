@@ -28,6 +28,7 @@ class LNURLServer(Logger, EventListener):
     - /.well-known/lnurlp/{any_username}
     - /lnurlp/callback/{token}
     """
+    MIN_RECEIVE_AMOUNT_MSAT = 1000
 
     def __init__(self, config: 'SimpleConfig', wallet: 'Abstract_Wallet'):
         Logger.__init__(self)
@@ -85,16 +86,17 @@ class LNURLServer(Logger, EventListener):
         # handle requests for all usernames, would there be a point in rejecting non-registered usernames?
         self.logger.info(f"lnurlp request for {username=}")
         max_sendable_msat = int(self.wallet.lnworker.num_sats_can_receive()) * 1000
-        if max_sendable_msat < 1000:
+        if max_sendable_msat < self.MIN_RECEIVE_AMOUNT_MSAT:
             error = {"status": "ERROR", "reason": "cannot receive anything, no liquidity."}
             return web.json_response(error)
         callback_token = token_hex(16)
         metadata = json.dumps([['text/plain', f'Payment to {username}']])
         self.callbacks[callback_token] = metadata
+        assert max_sendable_msat >= self.MIN_RECEIVE_AMOUNT_MSAT
         response = {
             'callback': f"https://{self.domain}/lnurlp/callback/{callback_token}",
             'maxSendable': max_sendable_msat,
-            'minSendable': min(max_sendable_msat, 1000),
+            'minSendable': self.MIN_RECEIVE_AMOUNT_MSAT,
             'metadata': metadata,
             'commentAllowed': 50,
             'tag': 'payRequest',
@@ -105,13 +107,17 @@ class LNURLServer(Logger, EventListener):
 
     async def lnurlp_callback(self, r):
         token = r.match_info['token']
-        if not token in self.callbacks:
+        metadata = self.callbacks.get(token)
+        if metadata is None:
             error = {"status":"ERROR", "reason":"request not found, maybe expired, try again."}
             return web.json_response(error)
-        metadata = self.callbacks.get(token)
+
         amount_msats = int(r.query['amount'])
         if amount_msats // 1000 > int(self.wallet.lnworker.num_sats_can_receive()):
             error = {"status": "ERROR", "reason": "cannot receive this amount, try smaller payment."}
+            return web.json_response(error)
+        if amount_msats < self.MIN_RECEIVE_AMOUNT_MSAT:
+            error = {"status": "ERROR", "reason": "amount below minSendable."}
             return web.json_response(error)
 
         if (zap_request := r.query.get('nostr')) is not None:
