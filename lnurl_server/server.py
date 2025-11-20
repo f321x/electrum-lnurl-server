@@ -122,13 +122,13 @@ class LNURLServer(Logger, EventListener):
 
         if (zap_request := r.query.get('nostr')) is not None:
             try:
-                event_id = self.zap_manager.validate_zap_request(zap_request, amount_msats)
+                zapped_event_id = self.zap_manager.validate_zap_request(zap_request, amount_msats)
             except Exception as e:
                 self.logger.debug(f"invalid {zap_request=}: ", exc_info=True)
                 error = {"status": "ERROR", "reason": f"Invalid zap request: {str(e)}."}
                 return web.json_response(error)
         else:
-            event_id = None
+            zapped_event_id = None
 
         async with aiohttp.ClientSession() as session:
             metadata = zap_request or metadata  # prioritize zap_request over metadata
@@ -137,7 +137,7 @@ class LNURLServer(Logger, EventListener):
                 'amount_msats': amount_msats,
                 'comment': comment,
                 'metadata': metadata,
-                'event_id': event_id,
+                'event_id': zapped_event_id,
             }
             async with session.post(self.addrequest_url, json=req) as response:
                 r = await response.json()
