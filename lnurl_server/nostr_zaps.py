@@ -4,6 +4,8 @@ from typing import TYPE_CHECKING, Optional
 import ssl
 import json
 
+from .util import normalize_websocket_urls
+
 from electrum import util
 from electrum.bip32 import BIP32Node, BIP32_PRIME
 from electrum.lnutil import generate_keypair
@@ -30,12 +32,12 @@ class NostrZapExtension(Logger):
             key_family=int(999 | BIP32_PRIME)
         )
         self.network = wallet.network
-        self.fallback_relays = wallet.config.NOSTR_RELAYS.split(',')
+        self.our_relays = set(normalize_websocket_urls(wallet.config.NOSTR_RELAYS.split(',')))
         self.ssl_context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH, cafile=util.ca_path)
         self.zap_requests = LRUCache(maxsize=100)
 
     @asynccontextmanager
-    async def _nostr_manager(self, relays: str):
+    async def _nostr_manager(self, relays: list[str]):
         if self.network.proxy and self.network.proxy.enabled:
             proxy = util.make_aiohttp_proxy_connector(self.network.proxy, self.ssl_context)
         else:
@@ -58,12 +60,13 @@ class NostrZapExtension(Logger):
         request_event_json, b11_invoice = zap_request
         assert isinstance(request_event_json, str)
         request_event = Event(**json.loads(request_event_json))
-        tag_relays = next(iter(tag for tag in request_event.tags if tag[0] == 'relays'), None)
-        relays = tag_relays[1:] if tag_relays and len(tag_relays) > 1 else self.fallback_relays
+
+        # construct tags
         tags = [
             ['bolt11', b11_invoice],
             ['description', request_event_json],
             ['preimage', preimage.hex()],
+            ['P', request_event.pubkey],
         ]
         if p_tag := next(iter(tag for tag in request_event.tags if tag[0] == 'p'), None):
             tags.append(p_tag)
@@ -71,10 +74,16 @@ class NostrZapExtension(Logger):
             tags.append(e_tag)
         if a_tag := next(iter(tag for tag in request_event.tags if tag[0] == 'a'), None):
             tags.append(a_tag)
-        if P_tag := next(iter(tag for tag in request_event.tags if tag[0] == 'P'), None):
-            tags.append(P_tag)
         if k_tag := next(iter(tag for tag in request_event.tags if tag[0] == 'k'), None):
             tags.append(k_tag)
+
+        # get relays from request event
+        tag_relays = next(iter(tag for tag in request_event.tags if tag[0] == 'relays'), None)
+        request_relays = set(normalize_websocket_urls(tag_relays[1:10]) if tag_relays else [])
+        # broadcast to our relays and up to 10 additional request relays
+        relays = list(request_relays | self.our_relays)
+
+        # broadcast zap receipt event
         async with self._nostr_manager(relays) as manager:
             eid = await aionostr._add_event(
                 manager,
